@@ -1,0 +1,10 @@
+streamlit
+PyMuPDF
+PyPDF2
+google-generativeai
+Pillow
+langchain
+langchain-google-genai
+torch
+torch-geometric
+chromadb
