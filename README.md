@@ -29,8 +29,10 @@ A virtual learning companion to transform passive learning into active engagemen
    cd InteractiveLearningCompanion
 
 2. **Install Dependencies:**
+   ```bash
    pip install -r requirements.txt
 3. **Run the Application:**
+   ```bash
    streamlit run app.py
 
 
