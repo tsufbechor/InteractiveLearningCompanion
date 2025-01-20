@@ -17,10 +17,24 @@ A virtual learning companion to transform passive learning into active engagemen
 - **RAG (Retrieval-Augmented Generation):** Enabling real-time access to updated and reliable content.
 - **Gemini Models:** Tailored for high-quality question-answer generation.
 - **Streamlit:** Providing an intuitive user interface.
-
+## Use Cases
+- **Students**: Generate custom quizzes and review key topics interactively.
+- **Teachers**: Create tailored exercises and track student performance.
+- **Independent Learners**: Explore new subjects with adaptive questioning and immediate feedback.
 ## Getting Started
 
 1. **Clone the Repository:**  
    ```bash
    git clone https://github.com/username/InteractiveLearningCompanion.git
    cd InteractiveLearningCompanion
+
+2. **Install Dependencies:**
+   pip install -r requirements.txt
+3. **Run the Application:**
+   streamlit run app.py
+
+
+## Future Enhancements
+Enhanced memory for tracking long-term user interactions.
+Insights page for reviewing past performance and question analytics.
+Integration of specialized knowledge bases for niche academic topics.
