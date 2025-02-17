@@ -31,6 +31,7 @@ A virtual learning companion to transform passive learning into active engagemen
 2. **Install Dependencies:**
    ```bash
    pip install -r requirements.txt
+   Enter you API KEY in generate.py
 3. **Run the Application:**
    ```bash
    streamlit run streamlit_app.py --server.enableXsrfProtection false
