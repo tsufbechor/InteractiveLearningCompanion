@@ -25,7 +25,7 @@ A virtual learning companion to transform passive learning into active engagemen
 
 1. **Clone the Repository:**  
    ```bash
-   git clone https://github.com/username/InteractiveLearningCompanion.git
+   git clone https://github.com/tsufbechor/InteractiveLearningCompanion.git
    cd InteractiveLearningCompanion
 
 2. **Install Dependencies:**
