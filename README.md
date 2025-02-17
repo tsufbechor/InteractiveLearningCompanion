@@ -33,7 +33,7 @@ A virtual learning companion to transform passive learning into active engagemen
    pip install -r requirements.txt
 3. **Run the Application:**
    ```bash
-   streamlit run app.py
+   streamlit run streamlit_app.py
 
 
 ## Future Enhancements
