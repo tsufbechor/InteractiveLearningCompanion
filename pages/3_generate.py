@@ -2,11 +2,16 @@ import os
 import random
 import re
 import uuid
+import tempfile
 import streamlit as st
 import fitz  # PyMuPDF
 import PyPDF2
+import requests
 import google.generativeai as genai
 import PIL.Image
+from urllib.parse import quote_plus
+from newspaper import Article, Config
+from bs4 import BeautifulSoup
 from langchain.chains.llm import LLMChain
 from langchain_core.messages import HumanMessage
 from langchain.memory import ConversationEntityMemory
@@ -15,22 +20,20 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_google_genai import ChatGoogleGenerativeAI
 from google.generativeai.types import StopCandidateException
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from langchain.chains import ConversationChain
+from langchain.chains import ConversationChain, RetrievalQA
 from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
+# --------------------- Page Config & Global CSS ---------------------
 st.set_page_config(page_title="AskMe", layout="wide")
 TEMP_DIR = "temp"
 
-# --------------------- Global CSS ---------------------
 global_css = """
 <style>
     body { 
         background-color: #F4F4F9; 
         font-family: 'Roboto', sans-serif; 
     }
-    /* Override default buttons */
     button {
         background-color: #4CAF50 !important;
         color: white !important;
@@ -44,7 +47,6 @@ global_css = """
     button:hover {
         background-color: #45A049 !important;
     }
-    /* Style for search input */
     .css-1aumxhk input {
         border: 2px solid #4CAF50 !important;
         border-radius: 8px !important;
@@ -58,6 +60,14 @@ st.markdown(global_css, unsafe_allow_html=True)
 # --------------------- Session State Initialization ---------------------
 if 'fulltext' not in st.session_state:
     st.session_state['fulltext'] = ""
+if 'domain' not in st.session_state:
+    st.session_state['domain'] = ""
+# articles_text is a list of article dictionaries
+if 'articles_text' not in st.session_state:
+    st.session_state['articles_text'] = []
+if 'knowledge_base' not in st.session_state:
+    st.session_state['knowledge_base'] = None
+
 if 'question' not in st.session_state:
     st.session_state['question'] = ""
 if 'generate_question' not in st.session_state:
@@ -74,9 +84,9 @@ if 'selected_answer' not in st.session_state:
     st.session_state['selected_answer'] = ''
 if 'is_correct' not in st.session_state:
     st.session_state['is_correct'] = False
-# Persistent unique key for the current question (used for answer button keys)
 if 'current_question_uuid' not in st.session_state:
     st.session_state.current_question_uuid = str(uuid.uuid4())
+
 # Quiz state for Quiz Mode
 if 'quiz_questions' not in st.session_state:
     st.session_state.quiz_questions = []
@@ -87,9 +97,9 @@ if 'quiz_score' not in st.session_state:
 if 'quiz_history' not in st.session_state:
     st.session_state.quiz_history = []
 
-# --------------------- Global LLM & Conversation Chain ---------------------
-API_KEY = 'AIzaSyBbnLBTj3xqJe3oQxTQtkDo1F6ZW47H8nA'
-genai.configure(api_key=API_KEY)
+# --------------------- Global LLM & Related Chains ---------------------
+API_KEY = 'ENTER YOUR API KEY'
+genai.configure(api_key = API_KEY)
 
 llm = ChatGoogleGenerativeAI(
     model="gemini-pro",
@@ -119,7 +129,129 @@ embeddings = GoogleGenerativeAIEmbeddings(
 memory = ConversationEntityMemory(llm=llm)
 conversation = ConversationChain(llm=llm, prompt=ENTITY_MEMORY_CONVERSATION_TEMPLATE, memory=memory)
 
-# --------------------- Utility Functions ---------------------
+# --------------------- Utility Functions for Domain & KB ---------------------
+def extract_text_from_pdf(file_path, start_page, end_page):
+    pages = []
+    with open(file_path, "rb") as file:
+        pdf_reader = PyPDF2.PdfReader(file)
+        for page_num in range(start_page - 1, end_page):
+            if page_num < len(pdf_reader.pages):
+                pages.append(pdf_reader.pages[page_num].extract_text())
+    return "\n".join(pages)
+
+def extract_text_from_txt(file_path):
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read()
+    except Exception as e:
+        st.error(f"Error reading TXT file: {e}")
+        return ""
+
+def determine_document_domain(document_text):
+    prompt = f"""
+Based on the following document text, determine its primary domain or subject.
+Provide a concise one-word or short-phrase answer (e.g., "Classic/Modern ML", "Sports", "Economics", etc.).
+
+Document Text:
+\"\"\"{document_text[:1000]}...\"\"\"
+
+Answer:"""
+    domain = st.session_state.llm.predict(prompt)
+    return domain.strip()
+
+def get_article_content(url):
+    """
+    Retrieve full article content using newspaper3k with a custom Config
+    that mimics a real browser. If the content is too short, fallback to BeautifulSoup.
+    """
+    try:
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36"
+        config = Config()
+        config.browser_user_agent = user_agent
+        config.request_timeout = 15
+        config.http_headers = {
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Referer': 'https://www.google.com/'
+        }
+        article = Article(url, config=config)
+        article.download()
+        article.parse()
+        text = article.text.strip()
+        if len(text) < 200:
+            response = requests.get(url, headers=config.http_headers, timeout=15)
+            if response.status_code == 200:
+                soup = BeautifulSoup(response.text, 'lxml')
+                for script in soup(["script", "style"]):
+                    script.decompose()
+                text = soup.get_text(separator="\n").strip()
+        return text
+    except Exception as e:
+        st.warning(f"Failed to retrieve article from {url}: {e}")
+        return ""
+
+def get_wikipedia_full_text(title):
+    """
+    Retrieve the full text of a Wikipedia article using the parse API.
+    This should return the entire page content.
+    """
+    url = f"https://en.wikipedia.org/w/api.php?action=parse&page={quote_plus(title)}&format=json"
+    response = requests.get(url)
+    if response.status_code == 200:
+        data = response.json()
+        html = data.get("parse", {}).get("text", {}).get("*", "")
+        soup = BeautifulSoup(html, "lxml")
+        for script in soup(["script", "style"]):
+            script.decompose()
+        text = soup.get_text(separator="\n").strip()
+        return text
+    return ""
+
+def search_web_for_articles(domain):
+    """
+    Use Wikipedia's API to search for articles related to the given domain.
+    Returns a list (up to 10) of dictionaries with keys: title, link, content.
+    """
+    search_url = "https://en.wikipedia.org/w/api.php"
+    params = {
+        "action": "query",
+        "list": "search",
+        "srsearch": f"{domain} research",
+        "format": "json"
+    }
+    response = requests.get(search_url, params=params)
+    articles = []
+    if response.status_code == 200:
+        data = response.json()
+        search_results = data.get("query", {}).get("search", [])[:5]
+        for result in search_results:
+            title = result.get("title", "")
+            full_text = get_wikipedia_full_text(title)
+            link = f"https://en.wikipedia.org/wiki/{quote_plus(title)}"
+            articles.append({
+                "title": title,
+                "link": link,
+                "content": full_text
+            })
+        return articles
+    else:
+        st.error("Failed to retrieve Wikipedia articles.")
+        return []
+
+def create_knowledge_base(document_text, articles_text):
+    """
+    Build a knowledge base from the document text combined with external article content.
+    articles_text is expected to be a list of article dictionaries.
+    """
+    combined_text = document_text
+    if articles_text:
+        wiki_text = "\n".join([article["content"] for article in articles_text])
+        combined_text = document_text + "\n" + wiki_text
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+    chunks = splitter.split_text(combined_text)
+    vector_store = Chroma.from_texts(chunks, embeddings, collection_name="combined_kb")
+    return vector_store
+
+# --------------------- Existing Utility Functions ---------------------
 def handle_answer_selection(selected_answer):
     st.session_state['answered'] = True
     st.session_state['selected_answer'] = selected_answer
@@ -159,6 +291,23 @@ def reformat_output(output):
     while len(answers_txt) < 4:
         answers_txt.append(f"{chr(65+len(answers_txt))}) Option {len(answers_txt)+1}")
     return question_txt, answers_txt, correct_answer
+
+def generate_chain_of_thought_explanation(question, options, correct_answer, selected_answer):
+    options_str = "\n".join(options)
+    explanation_prompt = f"""
+You are a knowledgeable AI tutor. Provide a detailed chain-of-thought explanation for the following multiple-choice question.
+Explain why the correct answer is correct. If the user’s answer is incorrect, explain where they went wrong and key concepts to review.
+
+Question: {question}
+Options:
+{options_str}
+Correct Answer: {correct_answer}
+User Selected: {selected_answer}
+
+Explanation:
+"""
+    explanation = st.session_state.llm.predict(explanation_prompt)
+    return explanation
 
 def display_question_answer(question, answers, correct_answer):
     custom_css = """
@@ -202,43 +351,31 @@ def display_question_answer(question, answers, correct_answer):
                 st.warning("No valid correct answer was found in the model's response.")
             else:
                 st.error(f"Incorrect. The correct answer is: {st.session_state['correct_answer']}")
+        explanation = generate_chain_of_thought_explanation(
+            question,
+            st.session_state['answers'],
+            st.session_state['correct_answer'],
+            st.session_state['selected_answer']
+        )
+        st.markdown("**Explanation:**")
+        st.write(explanation)
         st.session_state['answered'] = False
 
-def extract_text_from_pdf(doc_path, start_page, end_page):
-    pages = []
-    with open(doc_path, "rb") as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        for page_num in range(start_page - 1, end_page):
-            if page_num < len(pdf_reader.pages):
-                page = pdf_reader.pages[page_num]
-                pages.append(page.extract_text())
-    return pages
-
-def extract_text_from_photo(image_path, vision_model):
-    try:
-        img_pil = PIL.Image.open(image_path)
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": "Save the text shown in the image"},
-                {"type": "image_url", "image_url": img_pil}
-            ]
-        )
-        output = vision_model.invoke([message])
-        return output.content
-    except StopCandidateException:
-        return "error"
-
-# --------------------- Main UI with Tabbed Interface ---------------------
+# --------------------- Main UI with Sidebar & Tabs ---------------------
 st.markdown(
     """
     <div style="text-align: center; padding: 20px;">
         <h1 style="font-size: 32px; color: #333333;">🤔 Let's Expand Your Knowledge</h1>
-        <p style="font-size: 18px; color: #555555;">Extract text from your document, search it, and generate custom questions and quizzes.</p>
+        <p style="font-size: 18px; color: #555555;">
+        Extract text from your document, then choose whether to enrich your knowledge base with related Wikipedia articles.
+        The AskMe Sidebar uses the combined KB (document + Wikipedia), while Generate Question and Quiz are based solely on the document.
+        </p>
     </div>
     """, unsafe_allow_html=True
 )
 st.write("---")
 
+# --------------------- Sidebar: Document Extraction & KB Building ---------------------
 with st.sidebar:
     st.markdown(
         """
@@ -247,72 +384,87 @@ with st.sidebar:
         </div>
         """, unsafe_allow_html=True
     )
-    # Search input and button (using a separate key to avoid conflicts)
     search_query = st.text_input("🔍 Enter your question:", "", key="search_query", help="Type your query here")
     search_button = st.button("Search", key="search_btn")
     st.markdown("<hr>", unsafe_allow_html=True)
-    uploaded_files = os.listdir(TEMP_DIR)
+    if os.path.exists(TEMP_DIR):
+        uploaded_files = os.listdir(TEMP_DIR)
+    else:
+        uploaded_files = []
     selected_file = st.selectbox("Select a file to analyze:", uploaded_files)
-
-# Document Extraction & Search (Sidebar)
-if selected_file:
-    file_path = os.path.join(TEMP_DIR, selected_file)
-    with st.sidebar:
-        if selected_file.lower().endswith(".pdf"):
-            doc_path = os.path.join(TEMP_DIR, selected_file)
-            pdf_document = fitz.open(file_path)
-            st.info("For faster performance, choose a few pages.")
-            col1, col2 = st.columns(2)
-            with col1:
-                start_page = st.number_input("Start page", value=1, min_value=1,
-                                             max_value=pdf_document.page_count, step=1)
-            with col2:
-                end_page = st.number_input("End page", value=pdf_document.page_count, 
-                                           min_value=1, max_value=pdf_document.page_count, step=1)
-        else:
-            image_path = os.path.join(TEMP_DIR, selected_file)
-        if st.button("Extract Text", key="extract_text", help="Extract text from the file"):
-            st.session_state['display_text'] = True
+    
+    # Build KB for AskMe Sidebar using document text + Wikipedia articles (if opted)
+    if selected_file:
+        file_path = os.path.join(TEMP_DIR, selected_file)
+        with st.sidebar:
             if selected_file.lower().endswith(".pdf"):
-                pages = extract_text_from_pdf(doc_path, start_page, end_page)
-                st.session_state['pdf_pages'] = pages
-                st.session_state['fulltext'] = "\n".join(pages)
-                if start_page <= end_page:
-                    for i, page_text in enumerate(pages, start=start_page):
-                        with st.expander(f"Page {i} ({len(page_text)} characters)"):
-                            st.write(page_text)
+                pdf_document = fitz.open(file_path)
+                st.info("For faster performance, choose a page range.")
+                col1, col2 = st.columns(2)
+                with col1:
+                    start_page = st.number_input("Start page", value=1, min_value=1,
+                                                 max_value=pdf_document.page_count, step=1)
+                with col2:
+                    end_page = st.number_input("End page", value=pdf_document.page_count, 
+                                               min_value=1, max_value=pdf_document.page_count, step=1)
+            if st.button("Extract Text", key="extract_text", help="Extract text from the file"):
+                st.session_state['display_text'] = True
+                if selected_file.lower().endswith(".pdf"):
+                    fulltext = extract_text_from_pdf(file_path, start_page, end_page)
                 else:
-                    st.warning("End page must be ≥ start page.")
-            else:
-                fulltext = extract_text_from_photo(file_path, vision_model)
-                if fulltext == "error":
-                    st.session_state['fulltext'] = ""
-                    st.error("Failed to extract text from the image. Try a different image.", icon="🚨")
-                else:
-                    st.session_state['fulltext'] = fulltext
+                    fulltext = extract_text_from_txt(file_path)
+                st.session_state['fulltext'] = fulltext
+                if fulltext:
                     with st.expander(f"Extracted Text ({len(fulltext)} characters)"):
                         st.write(fulltext)
-        else:
-            if st.session_state.get('display_text', False):
-                if selected_file.lower().endswith(".pdf") and 'pdf_pages' in st.session_state:
-                    for i, page_text in enumerate(st.session_state['pdf_pages'], start=start_page):
-                        with st.expander(f"Page {i} ({len(page_text)} characters)"):
-                            st.write(page_text)
+                    # Option to enrich KB with external Wikipedia articles
+                    use_external = st.checkbox("Enrich KB with external Wikipedia articles", value=True)
+                    if use_external:
+                        with st.spinner("Determining document domain..."):
+                            domain = determine_document_domain(fulltext)
+                            st.session_state['domain'] = domain
+                        st.info(f"Document Domain: **{domain}**")
+                        with st.spinner("Searching for related Wikipedia articles..."):
+                            articles_list = search_web_for_articles(domain)
+                            st.session_state['articles_text'] = articles_list
+                        if articles_list:
+                            st.success("Found external Wikipedia articles:")
+                            for article in articles_list:
+                                with st.expander(article["title"]):
+                                    st.markdown(f"[Link to article]({article['link']})")
+                                    st.write(article["content"])
+                        else:
+                            st.warning("No external articles found.")
+                    else:
+                        articles_list = []
+                        st.info("Using document text only for KB in AskMe Sidebar.")
+                        st.session_state['articles_text'] = articles_list
+                    # Build combined KB for AskMe Sidebar using document text + external articles if available
+                    combined_text = fulltext
+                    if st.session_state['articles_text']:
+                        wiki_text = "\n".join([article["content"] for article in st.session_state['articles_text']])
+                        combined_text = fulltext + "\n" + wiki_text
+                    with st.spinner("Building combined knowledge base..."):
+                        kb = create_knowledge_base(fulltext, st.session_state['articles_text'])
+                        st.session_state['knowledge_base'] = kb
+                    st.success("Knowledge base built successfully.")
                 else:
-                    fulltext = st.session_state.get('fulltext', "")
-                    if fulltext:
-                        with st.expander(f"Extracted Text ({len(fulltext)} characters)"):
-                            st.write(fulltext)
-    with st.sidebar:
-        st.markdown("<hr>", unsafe_allow_html=True)
-        st.subheader("Document Search Results")
+                    st.error("Failed to extract text from the document.")
+    st.markdown("<hr>", unsafe_allow_html=True)
+    st.subheader("Document Search Results (Based on Combined KB)")
+    
     if search_button:
-        fulltext = st.session_state.get('fulltext')
+        fulltext = st.session_state.get('fulltext', "")
+        articles_list = st.session_state.get('articles_text', [])
+        combined_text = fulltext
+        if articles_list:
+            wiki_text = "\n".join([article["content"] for article in articles_list])
+            combined_text = fulltext + "\n" + wiki_text
         question_search = st.session_state.get('search_query')
-        if question_search.strip() and fulltext:
+        if question_search.strip() and combined_text:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
-            texts = text_splitter.split_text(fulltext)
-            vector_index = Chroma.from_texts(texts, embeddings).as_retriever(search_kwargs={"k": 10})
+            texts = text_splitter.split_text(combined_text)
+            vector_index = Chroma.from_texts(texts, embeddings).as_retriever(search_kwargs={"k": 5})
             qa_chain = RetrievalQA.from_chain_type(
                 llm,
                 retriever=vector_index,
@@ -326,38 +478,38 @@ if selected_file:
             prompt_gemini = ChatPromptTemplate.from_template(template_gemini)
             chain_gemini = LLMChain(llm=llm, prompt=prompt_gemini)
             gemini_answer = chain_gemini.invoke({"question": question_search})['text']
-            st.markdown("*Answer based on Document:*")
+            st.markdown("*Answer based on Combined KB (Document + Wikipedia):*")
             with st.expander(f"Document Answer ({len(document_answer)} characters)"):
                 st.markdown(document_answer)
             st.markdown("*Gemini Answer:*")
             with st.expander(f"Gemini Answer ({len(gemini_answer)} characters)"):
                 st.markdown(gemini_answer)
 
-# --------------------- Main Page Tabs ---------------------
+# --------------------- Main Page Tabs: Generate Question & Quiz Mode ---------------------
+# For Generate Question and Quiz, use only the document text.
+doc_text_only = st.session_state.get('fulltext', "")
+
 tab_generate, tab_quiz = st.tabs(["Generate Question", "Quiz Mode"])
 
-# ----- Tab: Generate Question -----
+# ----- Tab: Generate Question (Document Only) -----
 with tab_generate:
     st.markdown(
         """
         <div style="text-align: center; margin-top: 20px;">
-            <h2 style="color: #333;">Generate a New Question</h2>
+            <h2 style="color: #333;">Generate a New Question (Document Only)</h2>
         </div>
         """, unsafe_allow_html=True
     )
     col1, col2, col3 = st.columns(3)
-    
-    # Generate New Question
     with col1:
-        Clicked = st.button("Generate New Question", key="new_question", help="Click to generate a new question")
+        Clicked = st.button("Generate New Question", key="new_question_doc", help="Click to generate a new question")
         if Clicked:
-            if st.session_state['fulltext'] == "":
+            if doc_text_only == "":
                 st.warning("Please extract text first.")
             else:
-                fulltext = st.session_state.get('fulltext', "")
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-                chunks = text_splitter.split_text(fulltext)
-                context_text = random.choice(chunks) if chunks else fulltext
+                chunks = text_splitter.split_text(doc_text_only)
+                context_text = random.choice(chunks) if chunks else doc_text_only
                 template_new = """
                 You are a helpful AI. Please create a novel multiple-choice question from the text below.
                 The final output must follow this exact format, with no extra lines or explanations:
@@ -377,7 +529,6 @@ with tab_generate:
                 prompt_new = ChatPromptTemplate.from_template(template_new)
                 chain_new = LLMChain(llm=llm, prompt=prompt_new)
                 output = chain_new.invoke({"context_text": context_text})['text']
-                # No debug line, so nothing displayed
                 q, a, c = reformat_output(output)
                 st.session_state['question_output'] = q
                 st.session_state['answers'] = a
@@ -390,21 +541,18 @@ with tab_generate:
             a = st.session_state['answers']
             c = st.session_state['correct_answer']
             display_question_answer(q, a, c)
-    
-    # Generate Harder Question
     with col2:
         if st.session_state.generate_question:
-            Clicked_Harder = st.button("Generate Harder Question", key="hard_question", help="Click to generate a harder question")
+            Clicked_Harder = st.button("Generate Harder Question", key="hard_question_doc", help="Click to generate a harder question")
             if Clicked_Harder:
                 st.session_state.generated = False
                 st.session_state.generated_hard = True
                 st.session_state.generated_easy = False
                 prev_q = st.session_state.get('question_output', "")
                 prev_c = st.session_state.get('correct_answer', "")
-                fulltext = st.session_state.get('fulltext', "")
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-                chunks = text_splitter.split_text(fulltext)
-                context_text = random.choice(chunks) if chunks else fulltext
+                chunks = text_splitter.split_text(doc_text_only)
+                context_text = random.choice(chunks) if chunks else doc_text_only
                 input_text = (
                     f"Generate a novel multiple-choice question that is more difficult than the previous one. "
                     f"Previous question was: {prev_q} and the previous correct answer was: {prev_c}. "
@@ -428,21 +576,18 @@ with tab_generate:
                 a = st.session_state['answers']
                 c = st.session_state['correct_answer']
                 display_question_answer(q, a, c)
-    
-    # Generate Easier Question
     with col3:
         if st.session_state.generate_question:
-            Easier_Clicked = st.button("Generate Easier Question", key="easy_question", help="Click to generate an easier question")
+            Easier_Clicked = st.button("Generate Easier Question", key="easy_question_doc", help="Click to generate an easier question")
             if Easier_Clicked:
                 st.session_state.generated = False
                 st.session_state.generated_hard = False
                 st.session_state.generated_easy = True
                 prev_q = st.session_state.get('question_output', "")
                 prev_c = st.session_state.get('correct_answer', "")
-                fulltext = st.session_state.get('fulltext', "")
                 text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-                chunks = text_splitter.split_text(fulltext)
-                context_text = random.choice(chunks) if chunks else fulltext
+                chunks = text_splitter.split_text(doc_text_only)
+                context_text = random.choice(chunks) if chunks else doc_text_only
                 input_text = (
                     f"Generate a novel multiple-choice question that is easier than the previous one. "
                     f"Previous question was: {prev_q} and the previous correct answer was: {prev_c}. "
@@ -467,28 +612,26 @@ with tab_generate:
                 c = st.session_state['correct_answer']
                 display_question_answer(q, a, c)
 
-# ----- Tab: Quiz Mode -----
-tab_quiz = tab_quiz
+# ----- Tab: Quiz Mode (Document Only) -----
 with tab_quiz:
     st.markdown(
         """
         <div style="text-align: center; margin-top: 20px;">
-            <h2 style="color: #333;">Document-Based Quiz</h2>
-            <p style="font-size: 16px; color: #555;">Answer 10 multiple-choice questions generated from your document.</p>
+            <h2 style="color: #333;">Document-Based Quiz (Document Only)</h2>
+            <p style="font-size: 16px; color: #555;">Answer 10 multiple-choice questions generated solely from your uploaded document.</p>
         </div>
         """, unsafe_allow_html=True
     )
-    if st.button("Start Quiz / Restart Quiz", key="start_quiz"):
+    if st.button("Start Quiz / Restart Quiz", key="start_quiz_doc"):
         st.session_state.quiz_questions = []
         st.session_state.quiz_index = 0
         st.session_state.quiz_score = 0
         st.session_state.quiz_history = []
-        if st.session_state['fulltext'] != "":
-            fulltext = st.session_state['fulltext']
+        if doc_text_only:
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=2000, chunk_overlap=200)
-            chunks = text_splitter.split_text(fulltext)
+            chunks = text_splitter.split_text(doc_text_only)
             for i in range(10):
-                context_text = random.choice(chunks) if chunks else fulltext
+                context_text = random.choice(chunks) if chunks else doc_text_only
                 template_quiz = """
                 You are a helpful AI. Please create a multiple-choice question (with 4 options) based on the text below.
                 The final output must follow this exact format (with no extra text):
@@ -547,13 +690,11 @@ with tab_quiz:
             st.markdown("### Quiz History")
             for record in st.session_state.quiz_history:
                 st.markdown(f"- **Q:** {record['question']}\n   **Your answer:** {record['selected']} — *{record['result']}*")
-            if st.button("Restart Quiz", key="restart_quiz"):
+            if st.button("Restart Quiz", key="restart_quiz_doc"):
                 st.session_state.quiz_questions = []
                 st.session_state.quiz_index = 0
                 st.session_state.quiz_score = 0
                 st.session_state.quiz_history = []
                 st.experimental_rerun()
-    else:
-        st.info("Start the quiz by clicking the 'Start Quiz / Restart Quiz' button.")
 
 st.write("---")
