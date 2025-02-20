@@ -21,9 +21,11 @@ A virtual learning companion to transform passive learning into active engagemen
 - **Personalized Learning:**  
   Adaptive feedback and question difficulty based on user interactions. Immediate correct/incorrect notifications with each question.
 
-- **Document Querying:**  
-  Retrieve relevant information from uploaded documents (via Retrieval-Augmented Generation) and get a separate Gemini-based answer for broader context.
-
+- **Document Querying with Retrieval-Augmented Generation (RAG):**  
+  Retrieve relevant information from your uploaded document and get a separate Gemini-based answer for broader context.
+  The AskMe Sidebar uses a knowledge base built from your document.
+-**Optional KB Enrichment with Wikipedia:**
+  By default, the knowledge base (KB) is built solely from your document. Users can opt in via a checkbox to enrich the AskMe Sidebar KB with up to 10 related Wikipedia articles. When enabled, the app determines the document’s domain, retrieves relevant Wikipedia articles, and rebuilds the KB using the combined content. External articles are displayed in separate expandable panels for easy exploration.
 - **Integration with Gemini:**  
   Utilizes Gemini for text generation (Gemini Pro) and Gemini Pro Vision for image-based text extraction.
 
@@ -33,7 +35,7 @@ A virtual learning companion to transform passive learning into active engagemen
   For seamless integration of Large Language Models (LLMs) and advanced prompting.
   
 - **RAG (Retrieval-Augmented Generation):**  
-  Enabling real-time access to updated and reliable content from your document.
+  Enabling real-time access to updated and reliable content from your document (and optionally from Wikipedia).
 
 - **Gemini Models:**  
   Tailored for high-quality question-answer generation (Gemini Pro) and image-based text extraction (Gemini Pro Vision).
@@ -46,6 +48,7 @@ A virtual learning companion to transform passive learning into active engagemen
 - **Students**  
   - Generate custom quizzes to practice newly learned material.  
   - Explore “harder” or “easier” questions to adapt to your current understanding.
+  - Use document querying to ask question and get answer based on document/knowledge base with similar documents/or gemini model
 
 - **Teachers**  
   - Create tailored exercises from a classroom PDF or image-based handout.  
