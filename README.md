@@ -87,14 +87,24 @@ Integration of specialized knowledge bases for niche academic topics.
    
 ![image](https://github.com/user-attachments/assets/0920530b-d2fe-42ee-b45a-3aa9f1f6014d)
 
-3. **Model Provides Chain Of thought in explanation**
+2. **Model Provides Chain Of thought in explanation**
+   
 ![image](https://github.com/user-attachments/assets/e9324879-7852-4aa7-87f7-388c4142485c)
-4. **User Requests Harder Question:**
+
+3. **User Requests Harder Question:**
+   
    ![image](https://github.com/user-attachments/assets/06020f55-6f1c-444b-9e65-eed3f5dd8206)
-5. **Quiz Mode:**
+   
+4. **Quiz Mode:**
+   
    ![image](https://github.com/user-attachments/assets/ce6b72b3-1e03-41d2-a3b3-e9d3be653caa)
-6. **Building Knowledge Base automatically with Wikipedia API**
+   
+5. **Building Knowledge Base automatically with Wikipedia API**
+   
    ![image](https://github.com/user-attachments/assets/05c14161-fe84-4b6e-ae19-3764fefa22e9)
-7. **User Querying, 1 answer based on Knowledge Base and 1 based on Gemini**
+   
+6. **User Querying, 1 answer based on Knowledge Base and 1 based on Gemini**
+   
    ![image](https://github.com/user-attachments/assets/bfed2371-ef02-4a7d-a5a5-0e02da04906b)
+   
    ![image](https://github.com/user-attachments/assets/76406456-8aeb-4c2e-ab9a-c2fafe54fce9)
